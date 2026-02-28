@@ -38,7 +38,6 @@ cask "bitwarden-desktop-linux" do
     FileUtils.mkdir_p "#{Dir.home}/.local/share/icons"
 
     # 5. Patch and install the .desktop entry
-    # We update the executable path to point to the Homebrew binary and fix the icon reference
     desktop_src = "#{staged_path}/usr/share/applications/bitwarden.desktop"
     desktop_dst = "#{Dir.home}/.local/share/applications/bitwarden.desktop"
 
@@ -51,18 +50,65 @@ cask "bitwarden-desktop-linux" do
     end
 
     # 6. Install the application icon
-    # We use the high-resolution 512x512 icon for better display quality
     icon_src = "#{staged_path}/usr/share/icons/hicolor/512x512/apps/bitwarden.png"
     icon_dst = "#{Dir.home}/.local/share/icons/bitwarden.png"
     if File.exist?(icon_src)
       FileUtils.cp(icon_src, icon_dst)
     end
+
+    # 7. Write a helper script for AppArmor profile installation.
+    # Installing the profile requires root, so we provide it as a post-install
+    # step the user runs manually (see caveats). This mirrors the approach used
+    # by linux-mcp-server in this tap.
+    apparmor_profile_src = "#{staged_path}/opt/Bitwarden/resources/apparmor-profile"
+    setup_script = "#{HOMEBREW_PREFIX}/bin/bitwarden-apparmor-setup"
+
+    File.write(setup_script, <<~BASH)
+      #!/bin/bash
+      set -e
+
+      PROFILE_SRC="#{staged_path}/opt/Bitwarden/resources/apparmor-profile"
+      PROFILE_DST="/etc/apparmor.d/bitwarden"
+
+      if ! apparmor_status --enabled > /dev/null 2>&1; then
+        echo "AppArmor is not enabled on this system, nothing to do."
+        exit 0
+      fi
+
+      if ! apparmor_parser --skip-kernel-load --debug "$PROFILE_SRC" > /dev/null 2>&1; then
+        echo "This version of AppArmor does not support the bundled profile, skipping."
+        exit 0
+      fi
+
+      echo "Installing AppArmor profile to $PROFILE_DST (requires sudo)..."
+      sudo cp -f "$PROFILE_SRC" "$PROFILE_DST"
+      sudo apparmor_parser --replace --write-cache --skip-read-cache "$PROFILE_DST"
+      echo "Done! You can now enable 'Unlock with system authentication' in Bitwarden settings."
+    BASH
+
+    system "chmod", "+x", setup_script
   end
 
-  # Manually clean up desktop integration files upon uninstallation
+  # Remove desktop integration, AppArmor profile, and the setup script on uninstall
   uninstall_postflight do
     FileUtils.rm_f "#{Dir.home}/.local/share/applications/bitwarden.desktop"
     FileUtils.rm_f "#{Dir.home}/.local/share/icons/bitwarden.png"
+    FileUtils.rm_f "#{HOMEBREW_PREFIX}/bin/bitwarden-apparmor-setup"
+
+    if File.exist?("/etc/apparmor.d/bitwarden")
+      system "sudo", "rm", "-f", "/etc/apparmor.d/bitwarden"
+    end
+  end
+
+  def caveats
+    <<~EOS
+      To enable "Unlock with system authentication" in Bitwarden settings,
+      run the following command after installation:
+
+        bitwarden-apparmor-setup
+
+      This installs the AppArmor profile and requires your sudo password.
+    EOS
   end
 
   zap trash: [
