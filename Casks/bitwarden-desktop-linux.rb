@@ -12,22 +12,34 @@ cask "bitwarden-desktop-linux" do
     strategy :github_latest
   end
 
+  preflight do
+    if File.exist?("#{staged_path}/data.tar.xz")
+      system "tar", "-xf", "#{staged_path}/data.tar.xz", "-C", staged_path.to_s
+    end
+
+    if File.exist?("#{staged_path}/opt/Bitwarden/chrome-sandbox")
+      system "chmod", "4755", "#{staged_path}/opt/Bitwarden/chrome-sandbox"
+    end
+
+    FileUtils.mkdir_p "#{Dir.home}/.local/share/applications"
+    FileUtils.mkdir_p "#{Dir.home}/.local/share/icons"
+
+    desktop_file = "#{staged_path}/usr/share/applications/bitwarden.desktop"
+    if File.exist?(desktop_file)
+      text = File.read(desktop_file)
+      text = text.gsub(%r{^Exec=.*}, "Exec=#{HOMEBREW_PREFIX}/bin/bitwarden %U")
+      text = text.gsub(%r{^Icon=.*}, "Icon=#{Dir.home}/.local/share/icons/bitwarden.png")
+      File.write(desktop_file, text)
+    end
+  end
+
   binary "opt/Bitwarden/bitwarden"
 
   artifact "usr/share/applications/bitwarden.desktop",
            target: "#{Dir.home}/.local/share/applications/bitwarden.desktop"
-  artifact "usr/share/pixmaps/bitwarden.png",
+           
+  artifact "usr/share/icons/hicolor/512x512/apps/bitwarden.png",
            target: "#{Dir.home}/.local/share/icons/bitwarden.png"
-
-  preflight do
-    desktop_file = "#{staged_path}/usr/share/applications/bitwarden.desktop"
-    if File.exist?(desktop_file)
-      text = File.read(desktop_file)
-      new_contents = text.gsub(%r{^Exec=.*}, "Exec=#{HOMEBREW_PREFIX}/bin/bitwarden %U")
-      new_contents = new_contents.gsub(%r{^Icon=.*}, "Icon=#{Dir.home}/.local/share/icons/bitwarden.png")
-      File.write(desktop_file, new_contents)
-    end
-  end
 
   zap trash: [
     "~/.config/Bitwarden",
