@@ -55,13 +55,10 @@ cask "bitwarden-desktop-linux" do
       FileUtils.cp(icon_src, icon_dst)
     end
 
-    # 7. Install the polkit policy for "Unlock with system authentication".
-    # polkitd reads .policy files from multiple directories, including
-    # /etc/polkit-1/actions/ which is writable without root on immutable
-    # ostree-based systems (Bluefin, Bazzite, Aurora) where /usr is read-only.
+    # 7. Write the polkit policy file.
     # Policy XML taken verbatim from Bitwarden source:
     # apps/desktop/src/key-management/biometrics/os-biometrics-linux.service.ts
-    polkit_policy = <<~XML
+    File.write("#{staged_path}/com.bitwarden.Bitwarden.policy", <<~XML)
       <?xml version="1.0" encoding="UTF-8"?>
       <!DOCTYPE policyconfig PUBLIC
        "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
@@ -80,15 +77,91 @@ cask "bitwarden-desktop-linux" do
       </policyconfig>
     XML
 
-    policy_dst = "/etc/polkit-1/actions/com.bitwarden.Bitwarden.policy"
-    FileUtils.mkdir_p "/etc/polkit-1/actions"
-    File.write(policy_dst, polkit_policy)
+    # 8. Write helper scripts for polkit policy management.
+    # Installing to /etc/polkit-1/actions/ requires root (sudo).
+    # NOTE: On immutable ostree systems (Bluefin, Bazzite, Aurora) /usr is
+    # read-only so we fall back to /etc/polkit-1/actions/ which polkitd also
+    # reads. However /etc/polkit-1/actions/ does not exist by default and must
+    # be created with sudo. This is a workaround — the proper solution on
+    # immutable systems is to have the policy shipped in the base image.
+    File.write("#{staged_path}/bitwarden-polkit-setup", <<~BASH)
+      #!/bin/bash
+      set -e
+
+      POLICY_SRC="#{staged_path}/com.bitwarden.Bitwarden.policy"
+      POLICY_DST="/etc/polkit-1/actions/com.bitwarden.Bitwarden.policy"
+
+      if [ -f "$POLICY_DST" ]; then
+        echo "Polkit policy already installed at $POLICY_DST"
+        exit 0
+      fi
+
+      echo "Creating /etc/polkit-1/actions/ and installing Bitwarden polkit policy..."
+      echo "This requires sudo."
+      sudo mkdir -p /etc/polkit-1/actions
+      sudo cp -f "$POLICY_SRC" "$POLICY_DST"
+      sudo chown root:root "$POLICY_DST"
+      sudo chmod 644 "$POLICY_DST"
+      echo "Done! You can now enable 'Unlock with system authentication' in Bitwarden settings."
+    BASH
+
+    File.write("#{staged_path}/bitwarden-polkit-remove", <<~BASH)
+      #!/bin/bash
+      set -e
+
+      POLICY_DST="/etc/polkit-1/actions/com.bitwarden.Bitwarden.policy"
+
+      if [ ! -f "$POLICY_DST" ]; then
+        echo "Polkit policy not found at $POLICY_DST, nothing to do."
+        exit 0
+      fi
+
+      echo "Removing Bitwarden polkit policy (requires sudo)..."
+      sudo rm -f "$POLICY_DST"
+      echo "Done."
+    BASH
+
+    system "chmod", "+x", "#{staged_path}/bitwarden-polkit-setup"
+    system "chmod", "+x", "#{staged_path}/bitwarden-polkit-remove"
+  end
+
+  postflight do
+    FileUtils.ln_sf "#{staged_path}/bitwarden-polkit-setup",
+                    "#{HOMEBREW_PREFIX}/bin/bitwarden-polkit-setup"
+    FileUtils.ln_sf "#{staged_path}/bitwarden-polkit-remove",
+                    "#{HOMEBREW_PREFIX}/bin/bitwarden-polkit-remove"
+  end
+
+  caveats do
+    puts <<~EOS
+      To enable "Unlock with system authentication" in Bitwarden settings,
+      run the following command once after installation:
+
+        bitwarden-polkit-setup
+
+      This installs the polkit policy to /etc/polkit-1/actions/ and requires sudo.
+
+      ⚠️  Workaround notice: on immutable ostree-based systems (Bluefin, Bazzite, Aurora)
+      /usr/share/polkit-1/actions/ is read-only, so we install to /etc/polkit-1/actions/
+      instead. This directory is created if it does not exist.
+
+      To remove the policy on uninstall, run first:
+
+        bitwarden-polkit-remove
+    EOS
+  end
+
+  uninstall_preflight do
+    if File.exist?("#{staged_path}/bitwarden-polkit-remove")
+      system "#{staged_path}/bitwarden-polkit-remove"
+    end
   end
 
   uninstall_postflight do
     FileUtils.rm_f "#{Dir.home}/.local/share/applications/bitwarden.desktop"
     FileUtils.rm_f "#{Dir.home}/.local/share/icons/bitwarden.png"
-    FileUtils.rm_f "/etc/polkit-1/actions/com.bitwarden.Bitwarden.policy"
+    FileUtils.rm_f "#{HOMEBREW_PREFIX}/bin/bitwarden-polkit-setup"
+    FileUtils.rm_f "#{HOMEBREW_PREFIX}/bin/bitwarden-polkit-remove"
   end
 
   zap trash: [
