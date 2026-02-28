@@ -54,114 +54,26 @@ cask "bitwarden-desktop-linux" do
     if File.exist?(icon_src)
       FileUtils.cp(icon_src, icon_dst)
     end
-
-    # 7. Write the polkit policy file.
-    # Policy XML taken verbatim from Bitwarden source:
-    # apps/desktop/src/key-management/biometrics/os-biometrics-linux.service.ts
-    File.write("#{staged_path}/com.bitwarden.Bitwarden.policy", <<~XML)
-      <?xml version="1.0" encoding="UTF-8"?>
-      <!DOCTYPE policyconfig PUBLIC
-       "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
-       "http://www.freedesktop.org/standards/PolicyKit/1.0/policyconfig.dtd">
-
-      <policyconfig>
-          <action id="com.bitwarden.Bitwarden.unlock">
-            <description>Unlock Bitwarden</description>
-            <message>Authenticate to unlock Bitwarden</message>
-            <defaults>
-              <allow_any>no</allow_any>
-              <allow_inactive>no</allow_inactive>
-              <allow_active>auth_self</allow_active>
-            </defaults>
-          </action>
-      </policyconfig>
-    XML
-
-    # 8. Write helper scripts for polkit policy management.
-    # Installing to /etc/polkit-1/actions/ requires root (sudo).
-    # NOTE: On immutable ostree systems (Bluefin, Bazzite, Aurora) /usr is
-    # read-only so we fall back to /etc/polkit-1/actions/ which polkitd also
-    # reads. However /etc/polkit-1/actions/ does not exist by default and must
-    # be created with sudo. This is a workaround — the proper solution on
-    # immutable systems is to have the policy shipped in the base image.
-    File.write("#{staged_path}/bitwarden-polkit-setup", <<~BASH)
-      #!/bin/bash
-      set -e
-
-      POLICY_SRC="#{staged_path}/com.bitwarden.Bitwarden.policy"
-      POLICY_DST="/etc/polkit-1/actions/com.bitwarden.Bitwarden.policy"
-
-      if [ -f "$POLICY_DST" ]; then
-        echo "Polkit policy already installed at $POLICY_DST"
-        exit 0
-      fi
-
-      echo "Creating /etc/polkit-1/actions/ and installing Bitwarden polkit policy..."
-      echo "This requires sudo."
-      sudo mkdir -p /etc/polkit-1/actions
-      sudo cp -f "$POLICY_SRC" "$POLICY_DST"
-      sudo chown root:root "$POLICY_DST"
-      sudo chmod 644 "$POLICY_DST"
-      echo "Done! You can now enable 'Unlock with system authentication' in Bitwarden settings."
-    BASH
-
-    File.write("#{staged_path}/bitwarden-polkit-remove", <<~BASH)
-      #!/bin/bash
-      set -e
-
-      POLICY_DST="/etc/polkit-1/actions/com.bitwarden.Bitwarden.policy"
-
-      if [ ! -f "$POLICY_DST" ]; then
-        echo "Polkit policy not found at $POLICY_DST, nothing to do."
-        exit 0
-      fi
-
-      echo "Removing Bitwarden polkit policy (requires sudo)..."
-      sudo rm -f "$POLICY_DST"
-      echo "Done."
-    BASH
-
-    system "chmod", "+x", "#{staged_path}/bitwarden-polkit-setup"
-    system "chmod", "+x", "#{staged_path}/bitwarden-polkit-remove"
-  end
-
-  postflight do
-    FileUtils.ln_sf "#{staged_path}/bitwarden-polkit-setup",
-                    "#{HOMEBREW_PREFIX}/bin/bitwarden-polkit-setup"
-    FileUtils.ln_sf "#{staged_path}/bitwarden-polkit-remove",
-                    "#{HOMEBREW_PREFIX}/bin/bitwarden-polkit-remove"
-  end
-
-  caveats do
-    puts <<~EOS
-      To enable "Unlock with system authentication" in Bitwarden settings,
-      run the following command once after installation:
-
-        bitwarden-polkit-setup
-
-      This installs the polkit policy to /etc/polkit-1/actions/ and requires sudo.
-
-      ⚠️  Workaround notice: on immutable ostree-based systems (Bluefin, Bazzite, Aurora)
-      /usr/share/polkit-1/actions/ is read-only, so we install to /etc/polkit-1/actions/
-      instead. This directory is created if it does not exist.
-
-      To remove the policy on uninstall, run first:
-
-        bitwarden-polkit-remove
-    EOS
-  end
-
-  uninstall_preflight do
-    if File.exist?("#{staged_path}/bitwarden-polkit-remove")
-      system "#{staged_path}/bitwarden-polkit-remove"
-    end
   end
 
   uninstall_postflight do
     FileUtils.rm_f "#{Dir.home}/.local/share/applications/bitwarden.desktop"
     FileUtils.rm_f "#{Dir.home}/.local/share/icons/bitwarden.png"
-    FileUtils.rm_f "#{HOMEBREW_PREFIX}/bin/bitwarden-polkit-setup"
-    FileUtils.rm_f "#{HOMEBREW_PREFIX}/bin/bitwarden-polkit-remove"
+  end
+
+  caveats do
+    puts <<~EOS
+      ⚠️  "Unlock with system authentication" is not supported via this Homebrew cask
+      on immutable ostree-based systems (Bluefin, Bazzite, Aurora).
+
+      The polkit policy required for this feature must be installed to
+      /usr/share/polkit-1/actions/, which is read-only on immutable systems.
+      There is no reliable workaround available in userspace.
+
+      If you need this feature, use the official Flatpak instead:
+
+        flatpak install flathub com.bitwarden.desktop
+    EOS
   end
 
   zap trash: [
