@@ -1,6 +1,6 @@
 cask "bitwarden-desktop-linux" do
-  version "2026.1.0"
-  sha256 "6db36b2ed691901483a1c2355bdef5ca102a1f53a26cf4be2173b9e1a4b252e5"
+  version "2026.1.1"
+  sha256 "6f2f5426390181c680e316b1f6ca1fd0e0c5abb21f2b671633d4dcd7210bf407"
 
   url "https://github.com/bitwarden/clients/releases/download/desktop-v#{version}/Bitwarden-#{version}-amd64.deb"
   name "Bitwarden"
@@ -63,16 +63,13 @@ cask "bitwarden-desktop-linux" do
 
   caveats do
     puts <<~EOS
-      ⚠️  "Unlock with system authentication" is not supported via this Homebrew cask
-      on immutable ostree-based systems (Bluefin, Bazzite, Aurora).
+      ⚠️  "Unlock with system authentication" is not available on immutable
+      ostree-based systems (Bluefin, Bazzite, Aurora).
 
-      The polkit policy required for this feature must be installed to
-      /usr/share/polkit-1/actions/, which is read-only on immutable systems.
-      There is no reliable workaround available in userspace.
-
-      If you need this feature, use the official Flatpak instead:
-
-        flatpak install flathub com.bitwarden.desktop
+      This feature requires the polkit policy to be installed to
+      /usr/share/polkit-1/actions/ which is read-only on immutable systems.
+      Flatpak and Snap do not support this feature either due to sandbox
+      restrictions.
     EOS
   end
 
