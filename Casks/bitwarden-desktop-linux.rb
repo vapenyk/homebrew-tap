@@ -56,14 +56,13 @@ cask "bitwarden-desktop-linux" do
       FileUtils.cp(icon_src, icon_dst)
     end
 
-    # 7. Write a helper script for AppArmor profile installation.
-    # Installing the profile requires root, so we provide it as a post-install
-    # step the user runs manually (see caveats). This mirrors the approach used
-    # by linux-mcp-server in this tap.
+    # 7. Write helper scripts for AppArmor profile management.
+    # Installing/removing the profile requires root, so we provide explicit
+    # scripts the user runs manually. This avoids sudo prompts during
+    # brew install / brew uninstall.
     apparmor_profile_src = "#{staged_path}/opt/Bitwarden/resources/apparmor-profile"
-    setup_script = "#{HOMEBREW_PREFIX}/bin/bitwarden-apparmor-setup"
 
-    File.write(setup_script, <<~BASH)
+    File.write("#{staged_path}/bitwarden-apparmor-setup", <<~BASH)
       #!/bin/bash
       set -e
 
@@ -86,29 +85,61 @@ cask "bitwarden-desktop-linux" do
       echo "Done! You can now enable 'Unlock with system authentication' in Bitwarden settings."
     BASH
 
-    system "chmod", "+x", setup_script
+    File.write("#{staged_path}/bitwarden-apparmor-remove", <<~BASH)
+      #!/bin/bash
+      set -e
+
+      PROFILE_DST="/etc/apparmor.d/bitwarden"
+
+      if [ ! -f "$PROFILE_DST" ]; then
+        echo "AppArmor profile not found at $PROFILE_DST, nothing to do."
+        exit 0
+      fi
+
+      echo "Removing AppArmor profile $PROFILE_DST (requires sudo)..."
+      sudo apparmor_parser --remove "$PROFILE_DST" 2>/dev/null || true
+      sudo rm -f "$PROFILE_DST"
+      echo "Done."
+    BASH
+
+    system "chmod", "+x", "#{staged_path}/bitwarden-apparmor-setup"
+    system "chmod", "+x", "#{staged_path}/bitwarden-apparmor-remove"
   end
 
-  # Remove desktop integration, AppArmor profile, and the setup script on uninstall
+  postflight do
+    # Symlink the helper scripts into PATH so the user can run them directly
+    FileUtils.ln_sf "#{staged_path}/bitwarden-apparmor-setup",
+                    "#{HOMEBREW_PREFIX}/bin/bitwarden-apparmor-setup"
+    FileUtils.ln_sf "#{staged_path}/bitwarden-apparmor-remove",
+                    "#{HOMEBREW_PREFIX}/bin/bitwarden-apparmor-remove"
+  end
+
+  caveats do
+    puts <<~EOS
+      To enable "Unlock with system authentication" in Bitwarden settings,
+      run the following command once after installation:
+
+        bitwarden-apparmor-setup
+
+      This installs the AppArmor profile and will prompt for your sudo password.
+
+      If you later uninstall this cask, run the following first to clean up the profile:
+
+        bitwarden-apparmor-remove
+    EOS
+  end
+
+  uninstall_preflight do
+    # Remove the AppArmor profile before the cask files are deleted,
+    # while the remove script and profile source are still available
+    system "#{staged_path}/bitwarden-apparmor-remove" if File.exist?("#{staged_path}/bitwarden-apparmor-remove")
+  end
+
   uninstall_postflight do
     FileUtils.rm_f "#{Dir.home}/.local/share/applications/bitwarden.desktop"
     FileUtils.rm_f "#{Dir.home}/.local/share/icons/bitwarden.png"
     FileUtils.rm_f "#{HOMEBREW_PREFIX}/bin/bitwarden-apparmor-setup"
-
-    if File.exist?("/etc/apparmor.d/bitwarden")
-      system "sudo", "rm", "-f", "/etc/apparmor.d/bitwarden"
-    end
-  end
-
-  def caveats
-    <<~EOS
-      To enable "Unlock with system authentication" in Bitwarden settings,
-      run the following command after installation:
-
-        bitwarden-apparmor-setup
-
-      This installs the AppArmor profile and requires your sudo password.
-    EOS
+    FileUtils.rm_f "#{HOMEBREW_PREFIX}/bin/bitwarden-apparmor-remove"
   end
 
   zap trash: [
