@@ -28,7 +28,6 @@ cask "bitwarden-desktop-linux" do
     end
 
     # 3. Set necessary SUID permissions for the Electron chrome-sandbox
-    # This is required for the application to launch correctly on many Linux kernels
     if File.exist?("#{staged_path}/opt/Bitwarden/chrome-sandbox")
       system "chmod", "4755", "#{staged_path}/opt/Bitwarden/chrome-sandbox"
     end
@@ -56,62 +55,80 @@ cask "bitwarden-desktop-linux" do
       FileUtils.cp(icon_src, icon_dst)
     end
 
-    # 7. Write helper scripts for AppArmor profile management.
-    # Installing/removing the profile requires root, so we provide explicit
-    # scripts the user runs manually. This avoids sudo prompts during
-    # brew install / brew uninstall.
-    apparmor_profile_src = "#{staged_path}/opt/Bitwarden/resources/apparmor-profile"
+    # 7. Write the polkit policy content.
+    # Taken verbatim from Bitwarden source:
+    # apps/desktop/src/key-management/biometrics/os-biometrics-linux.service.ts
+    # This is identical to what Bitwarden's own runSetup() installs via pkexec.
+    polkit_policy = <<~XML
+      <?xml version="1.0" encoding="UTF-8"?>
+      <!DOCTYPE policyconfig PUBLIC
+       "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+       "http://www.freedesktop.org/standards/PolicyKit/1.0/policyconfig.dtd">
 
-    File.write("#{staged_path}/bitwarden-apparmor-setup", <<~BASH)
+      <policyconfig>
+          <action id="com.bitwarden.Bitwarden.unlock">
+            <description>Unlock Bitwarden</description>
+            <message>Authenticate to unlock Bitwarden</message>
+            <defaults>
+              <allow_any>no</allow_any>
+              <allow_inactive>no</allow_inactive>
+              <allow_active>auth_self</allow_active>
+            </defaults>
+          </action>
+      </policyconfig>
+    XML
+
+    File.write("#{staged_path}/com.bitwarden.Bitwarden.policy", polkit_policy)
+
+    # 8. Write helper scripts for polkit policy management.
+    # We mirror exactly what Bitwarden's runSetup() does:
+    #   - install policy to /usr/share/polkit-1/actions/
+    #   - chcon for SELinux context (Fedora/Bluefin/Bazzite)
+    # pkexec is used instead of sudo, matching Bitwarden's own implementation.
+    File.write("#{staged_path}/bitwarden-polkit-setup", <<~BASH)
       #!/bin/bash
       set -e
 
-      PROFILE_SRC="#{staged_path}/opt/Bitwarden/resources/apparmor-profile"
-      PROFILE_DST="/etc/apparmor.d/bitwarden"
+      POLICY_SRC="#{staged_path}/com.bitwarden.Bitwarden.policy"
+      POLICY_DST="/usr/share/polkit-1/actions/com.bitwarden.Bitwarden.policy"
 
-      if ! apparmor_status --enabled > /dev/null 2>&1; then
-        echo "AppArmor is not enabled on this system, nothing to do."
-        exit 0
-      fi
-
-      if ! apparmor_parser --skip-kernel-load --debug "$PROFILE_SRC" > /dev/null 2>&1; then
-        echo "This version of AppArmor does not support the bundled profile, skipping."
-        exit 0
-      fi
-
-      echo "Installing AppArmor profile to $PROFILE_DST (requires sudo)..."
-      sudo cp -f "$PROFILE_SRC" "$PROFILE_DST"
-      sudo apparmor_parser --replace --write-cache --skip-read-cache "$PROFILE_DST"
+      echo "Installing Bitwarden polkit policy (requires authentication)..."
+      pkexec bash -c "
+        cp -f '$POLICY_SRC' '$POLICY_DST' &&
+        chown root:root '$POLICY_DST' &&
+        if command -v chcon &>/dev/null; then
+          chcon system_u:object_r:usr_t:s0 '$POLICY_DST' 2>/dev/null || true
+        fi
+      "
       echo "Done! You can now enable 'Unlock with system authentication' in Bitwarden settings."
     BASH
 
-    File.write("#{staged_path}/bitwarden-apparmor-remove", <<~BASH)
+    File.write("#{staged_path}/bitwarden-polkit-remove", <<~BASH)
       #!/bin/bash
       set -e
 
-      PROFILE_DST="/etc/apparmor.d/bitwarden"
+      POLICY_DST="/usr/share/polkit-1/actions/com.bitwarden.Bitwarden.policy"
 
-      if [ ! -f "$PROFILE_DST" ]; then
-        echo "AppArmor profile not found at $PROFILE_DST, nothing to do."
+      if [ ! -f "$POLICY_DST" ]; then
+        echo "Polkit policy not found at $POLICY_DST, nothing to do."
         exit 0
       fi
 
-      echo "Removing AppArmor profile $PROFILE_DST (requires sudo)..."
-      sudo apparmor_parser --remove "$PROFILE_DST" 2>/dev/null || true
-      sudo rm -f "$PROFILE_DST"
+      echo "Removing Bitwarden polkit policy (requires authentication)..."
+      pkexec rm -f "$POLICY_DST"
       echo "Done."
     BASH
 
-    system "chmod", "+x", "#{staged_path}/bitwarden-apparmor-setup"
-    system "chmod", "+x", "#{staged_path}/bitwarden-apparmor-remove"
+    system "chmod", "+x", "#{staged_path}/bitwarden-polkit-setup"
+    system "chmod", "+x", "#{staged_path}/bitwarden-polkit-remove"
   end
 
   postflight do
-    # Symlink the helper scripts into PATH so the user can run them directly
-    FileUtils.ln_sf "#{staged_path}/bitwarden-apparmor-setup",
-                    "#{HOMEBREW_PREFIX}/bin/bitwarden-apparmor-setup"
-    FileUtils.ln_sf "#{staged_path}/bitwarden-apparmor-remove",
-                    "#{HOMEBREW_PREFIX}/bin/bitwarden-apparmor-remove"
+    # Symlink helper scripts into PATH
+    FileUtils.ln_sf "#{staged_path}/bitwarden-polkit-setup",
+                    "#{HOMEBREW_PREFIX}/bin/bitwarden-polkit-setup"
+    FileUtils.ln_sf "#{staged_path}/bitwarden-polkit-remove",
+                    "#{HOMEBREW_PREFIX}/bin/bitwarden-polkit-remove"
   end
 
   caveats do
@@ -119,27 +136,30 @@ cask "bitwarden-desktop-linux" do
       To enable "Unlock with system authentication" in Bitwarden settings,
       run the following command once after installation:
 
-        bitwarden-apparmor-setup
+        bitwarden-polkit-setup
 
-      This installs the AppArmor profile and will prompt for your sudo password.
+      This installs the polkit policy and will prompt for authentication via pkexec.
+      Works on both SELinux (Fedora/Bluefin/Bazzite) and AppArmor (Ubuntu) systems.
 
-      If you later uninstall this cask, run the following first to clean up the profile:
+      To clean up the policy before uninstalling, run:
 
-        bitwarden-apparmor-remove
+        bitwarden-polkit-remove
     EOS
   end
 
   uninstall_preflight do
-    # Remove the AppArmor profile before the cask files are deleted,
-    # while the remove script and profile source are still available
-    system "#{staged_path}/bitwarden-apparmor-remove" if File.exist?("#{staged_path}/bitwarden-apparmor-remove")
+    # Remove the polkit policy before cask files are deleted,
+    # while staged_path and the remove script are still available.
+    if File.exist?("#{staged_path}/bitwarden-polkit-remove")
+      system "#{staged_path}/bitwarden-polkit-remove"
+    end
   end
 
   uninstall_postflight do
     FileUtils.rm_f "#{Dir.home}/.local/share/applications/bitwarden.desktop"
     FileUtils.rm_f "#{Dir.home}/.local/share/icons/bitwarden.png"
-    FileUtils.rm_f "#{HOMEBREW_PREFIX}/bin/bitwarden-apparmor-setup"
-    FileUtils.rm_f "#{HOMEBREW_PREFIX}/bin/bitwarden-apparmor-remove"
+    FileUtils.rm_f "#{HOMEBREW_PREFIX}/bin/bitwarden-polkit-setup"
+    FileUtils.rm_f "#{HOMEBREW_PREFIX}/bin/bitwarden-polkit-remove"
   end
 
   zap trash: [
