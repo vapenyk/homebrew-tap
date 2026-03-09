@@ -1,6 +1,6 @@
 cask "bitwarden-desktop-linux" do
-  version "2026.1.1"
-  sha256 "6f2f5426390181c680e316b1f6ca1fd0e0c5abb21f2b671633d4dcd7210bf407"
+  version "2026.2.1"
+  sha256 "c6bf04c054ac30c88b69cec823634134e51b22f52627ad5a44ac92d634a77167"
 
   url "https://github.com/bitwarden/clients/releases/download/desktop-v#{version}/Bitwarden-#{version}-amd64.deb"
   name "Bitwarden"
